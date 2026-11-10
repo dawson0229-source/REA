@@ -8,6 +8,21 @@ PSP/Allegrex has a [separate static-ELF profile](ghidra-psp.md) tracked in
 
 ## Admission boundary
 
+After building, `node scripts/verify-real-ghidra-mips-boundaries.mjs` checks both
+byte orders through production CLI/MCP. GNU readelf independently decodes the
+soft-float attribute fixture; declared-o32 MIPS I and unsupported GNU soft-float
+inputs are refused, while recordless MIPS I and MIPS32 controls produce real
+Ghidra dossiers and exact loaded bytes. The verifier checks the imported
+`MIPS:LE:32:default` and `MIPS:BE:32:default` language IDs through
+`inspect_native_load_image` and records the observed ID for each control.
+MIPS I instruction-subset and load-delay semantics remain unverified. Supply
+existing Ghidra/Java and GNU readelf (`REA_READELF`). Source hashes are checked
+after inspection, and no target is executed. Cleanup checks process lineage and
+an independent run-token sweep using each provider run ID retained from
+`binary_session` before closing the target. Ghidra overrides the outer verifier
+token with that session ID; checking the outer token alone cannot detect a
+reparented engine.
+
 ELF `EM_MIPS` is retained as the provider-neutral `mips` family. The target also
 retains class, byte order, `e_type`, raw `e_flags`, and inspected ABI declarations.
 Recognition does not mean every provider or MIPS variant is supported. Existing
