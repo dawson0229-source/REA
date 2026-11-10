@@ -1538,7 +1538,9 @@ const resolveCandidate = (
 };
 
 const commonJsDirectoryRequest = (input: ResolveArtifactPathInput): boolean =>
-  input.context === "module-specifier" &&
+  (input.context === "module-specifier" ||
+    (input.context === "filesystem-expression" &&
+      input.runtimePathKind === "node-entrypoint")) &&
   input.moduleKind === "require" &&
   (input.declaredPath.endsWith("/") ||
     /(?:^|\/)\.{1,2}$/u.test(input.declaredPath));
@@ -1709,7 +1711,9 @@ const isNodeFilesystemLookup = (input: ResolveArtifactPathInput): boolean =>
   input.runtimePathKind === "node-entrypoint" ||
   (input.moduleKind !== undefined &&
     (input.context === "module-specifier" ||
-      input.context === "package-entrypoint"));
+      input.context === "package-entrypoint" ||
+      (input.context === "filesystem-expression" &&
+        input.runtimePathKind === "exact-file")));
 
 /** Runtime launch and module lookup share archive occurrence admission. */
 const crossesRuntimeArchiveBoundary = (

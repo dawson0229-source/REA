@@ -180,6 +180,18 @@ const utilityShape = {
   ...electronFindingContext,
   service_name: z.string().nullable(),
 };
+const anchoredPathStep = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("concat"), value: z.string() }),
+  z.strictObject({
+    kind: z.literal("join"),
+    segments: strings,
+    strip_trailing_separator: z.boolean().exactOptional(),
+  }),
+  z.strictObject({
+    kind: z.literal("replace_asar_unpacked"),
+    replace_all: z.boolean().exactOptional(),
+  }),
+]);
 const electron = z
   .strictObject({
     app_path_changes: z
@@ -306,6 +318,56 @@ const electron = z
         members: strings,
         namespace_access: z.boolean().optional(),
         dynamic_member_access: z.boolean().optional(),
+        resolution: z
+          .discriminatedUnion("kind", [
+            z.strictObject({
+              kind: z.literal("node-gyp-build"),
+              directory: z.string(),
+              asar_unpacked: z.boolean().exactOptional(),
+              asar_unpacked_replace_all: z.boolean().exactOptional(),
+              asar_unpacked_scope: z
+                .strictObject({
+                  directory: z.string(),
+                  replace_all: z.boolean().exactOptional(),
+                })
+                .exactOptional(),
+              asar_unpacked_steps: z.array(anchoredPathStep).exactOptional(),
+            }),
+            z.strictObject({
+              kind: z.literal("bindings"),
+              addon_name: z.string(),
+              module_root: z.string().nullable(),
+              asar_unpacked: z.boolean().exactOptional(),
+              asar_unpacked_replace_all: z.boolean().exactOptional(),
+              asar_unpacked_scope: z
+                .strictObject({
+                  directory: z.string(),
+                  replace_all: z.boolean().exactOptional(),
+                })
+                .exactOptional(),
+              asar_unpacked_steps: z.array(anchoredPathStep).exactOptional(),
+            }),
+            z.strictObject({
+              kind: z.literal("candidates"),
+              loader: z.literal("dlopen").exactOptional(),
+              lookup: z.enum(["commonjs", "exact-file"]).exactOptional(),
+              resolution_context: pathContext,
+              candidates: strings,
+              resolution_base_path: z.string().exactOptional(),
+              asar_unpacked: z.boolean().exactOptional(),
+              asar_unpacked_replace_all: z.boolean().exactOptional(),
+              asar_unpacked_scope: z
+                .strictObject({
+                  directory: z.string(),
+                  replace_all: z.boolean().exactOptional(),
+                })
+                .exactOptional(),
+              asar_unpacked_candidate_steps: z
+                .array(z.array(anchoredPathStep))
+                .exactOptional(),
+            }),
+          ])
+          .optional(),
       }),
     ),
     dynamic_code: z
@@ -488,14 +550,19 @@ export const javaScriptWorkerStaticAnalysisSchema = z
       sender_validations: analysis.electron.sender_validations.map(withRuntime),
       native_addon_bindings: analysis.electron.native_addon_bindings.map(
         (value) => {
-          const { namespace_access, dynamic_member_access, ...rest } =
-            withRuntime(value);
+          const {
+            namespace_access,
+            dynamic_member_access,
+            resolution,
+            ...rest
+          } = withRuntime(value);
           return {
             ...rest,
             ...(namespace_access === undefined ? {} : { namespace_access }),
             ...(dynamic_member_access === undefined
               ? {}
               : { dynamic_member_access }),
+            ...(resolution === undefined ? {} : { resolution }),
           };
         },
       ),

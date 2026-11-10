@@ -682,7 +682,9 @@ const loaderInvocationInterops = new WeakMap<
   }
 >();
 
-const loaderInvocationInterop = (state: JavaScriptSemanticAnalysisState) => {
+export const loaderInvocationInterop = (
+  state: JavaScriptSemanticAnalysisState,
+) => {
   const prior = loaderInvocationInterops.get(state);
   if (prior?.writes === state.ambientWriteEffects.length) return prior.interop;
   const interop = createSemanticModuleInterop(state);
