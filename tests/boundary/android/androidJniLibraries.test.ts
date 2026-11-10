@@ -25,6 +25,10 @@ import {
 import { androidPartialObservationSchema } from "../../../src/domain/android/androidPartialObservation.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { jniElfFixture } from "../../fixtures/android/jniElf.js";
+import {
+  ANDROID_NS,
+  binaryManifestFixture,
+} from "../../fixtures/android/binaryManifest.js";
 
 const OPERATION = "inspect_android_jni_bindings";
 const LIBRARY = "lib/arm64-v8a/libfixture.so";
@@ -36,6 +40,7 @@ const fixture = async (
     [LIBRARY, jniElfFixture().bytes],
   ],
   rename?: readonly [string, string],
+  encryptedMember?: string,
 ) => {
   const directory = await createTestTempDirectory("rea-android-jni-libraries-");
   const snapshot = join(directory, "selected app.apk");
@@ -50,6 +55,7 @@ const fixture = async (
     await writer.add(path, new Uint8ArrayReader(bytes), {
       level: 0,
       lastModDate: new Date("2020-01-01T00:00:00Z"),
+      ...(path === encryptedMember ? { password: "fixture" } : {}),
     });
   const bytes = Buffer.from(await writer.close());
   if (rename !== undefined) {
@@ -523,4 +529,174 @@ it("keeps completed facts and the interrupted carrier when a later library is ca
   } finally {
     open.mockRestore();
   }
+});
+
+it("reports required split types as an inventory unknown instead of a bare complete", async () => {
+  const source = await fixture([
+    [
+      "AndroidManifest.xml",
+      binaryManifestFixture({
+        attributes: [
+          {
+            namespace: ANDROID_NS,
+            name: "requiredSplitTypes",
+            stringValue: "base__abi,base__density",
+          },
+        ],
+      }),
+    ],
+  ]);
+  const result = await read(source);
+  expect(result.inventory.status).toBe("complete");
+  expect(result.inventory.unknowns.join("\n")).toContain(
+    "requires split APKs (base__abi, base__density)",
+  );
+});
+
+it("cancels a manifest read through the same finalization path as the scan", async () => {
+  const bytes = jniElfFixture().bytes;
+  const source = await fixture([
+    ["AndroidManifest.xml", binaryManifestFixture({ attributes: [] })],
+    [LIBRARY, bytes],
+  ]);
+  const controller = new AbortController(),
+    reason = { caller: "stop while reading the manifest" };
+  const originalOpen = ZipArtifactReader.prototype.open;
+  const open = vi
+    .spyOn(ZipArtifactReader.prototype, "open")
+    .mockImplementation(async function (
+      this: ZipArtifactReader,
+      entry,
+      signal,
+    ) {
+      if (entry.path === "AndroidManifest.xml") {
+        controller.abort(reason);
+        throw new JadxInterruption(reason);
+      }
+      return originalOpen.call(this, entry, signal);
+    });
+  let checkpoint: AndroidJniLibraryCheckpoint | undefined;
+  try {
+    const failure = await read(
+      source,
+      {},
+      controller.signal,
+      undefined,
+      (value) => {
+        checkpoint = value;
+      },
+    ).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(AnalysisCancelledError);
+    if (!(failure instanceof AnalysisCancelledError)) throw failure;
+    expect(failure.cause).toBe(reason);
+    expect(checkpoint).toMatchObject({
+      scan_state: "interrupted",
+      inventory: { status: "partial", selected_libraries: 1 },
+    });
+    expect(checkpoint?.libraries[0]).toMatchObject({
+      sha256: digest(bytes),
+      size: bytes.length,
+      facts: { tables: expect.any(Array) },
+    });
+    expect(checkpoint?.inventory.unknowns.join("\n")).toContain(
+      "unexamined selected occurrences remain unknown",
+    );
+    expect(source.resources.hasPending).toBe(false);
+  } finally {
+    open.mockRestore();
+  }
+});
+
+it("reports an unreadable manifest member as an inventory unknown", async () => {
+  const source = await fixture(
+    [["AndroidManifest.xml", binaryManifestFixture({ attributes: [] })]],
+    undefined,
+    "AndroidManifest.xml",
+  );
+  const result = await read(source);
+  expect(result.inventory.unknowns.join("\n")).toContain(
+    "AndroidManifest.xml is encrypted; required split types and libraries are unknown.",
+  );
+});
+
+it("reports an isSplitRequired manifest as an inventory unknown", async () => {
+  const source = await fixture([
+    [
+      "AndroidManifest.xml",
+      binaryManifestFixture({
+        attributes: [
+          {
+            namespace: ANDROID_NS,
+            name: "isSplitRequired",
+            booleanValue: true,
+          },
+        ],
+      }),
+    ],
+  ]);
+  const result = await read(source);
+  expect(result.inventory.unknowns.join("\n")).toContain(
+    "marks split installs as required",
+  );
+});
+
+it("leaves a manifest without split declarations unqualified", async () => {
+  const source = await fixture([
+    ["AndroidManifest.xml", binaryManifestFixture({ attributes: [] })],
+  ]);
+  const result = await read(source);
+  expect(result.inventory).toMatchObject({ status: "complete", unknowns: [] });
+});
+
+it("keeps APKs without AndroidManifest.xml unchanged", async () => {
+  const result = await read(await fixture());
+  expect(result.inventory).toMatchObject({ status: "complete", unknowns: [] });
+});
+
+it("leaves split declarations unknown when the APK holds two root manifests", async () => {
+  // ZIP allows a repeated member name; the reader keeps both occurrences, and
+  // a later one can require splits the first does not.
+  const split = binaryManifestFixture({
+    attributes: [
+      {
+        namespace: ANDROID_NS,
+        name: "requiredSplitTypes",
+        stringValue: "base__abi",
+      },
+    ],
+  }).toString("base64");
+  const plain = binaryManifestFixture({ attributes: [] }).toString("base64");
+  const source = await fixture(
+    [
+      ["AndroidManifest.xml", Buffer.from(plain, "base64")],
+      ["Manifest1111111.xml", Buffer.from(split, "base64")],
+    ],
+    ["Manifest1111111.xml", "AndroidManifest.xml"],
+  );
+  const result = await read(source);
+  expect(result.inventory.unknowns.join("\n")).toContain(
+    "more than one root AndroidManifest.xml",
+  );
+});
+
+it("reports a resource-referenced isSplitRequired as an inventory unknown", async () => {
+  const source = await fixture([
+    [
+      "AndroidManifest.xml",
+      binaryManifestFixture({
+        attributes: [
+          {
+            namespace: ANDROID_NS,
+            name: "isSplitRequired",
+            resourceId: 0x0101064d,
+            typedValue: { dataType: 0x01, data: 0x7f050001 },
+          },
+        ],
+      }),
+    ],
+  ]);
+  const result = await read(source);
+  expect(result.inventory.unknowns.join("\n")).toContain(
+    "split declaration is present but not readable as a literal",
+  );
 });
