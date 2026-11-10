@@ -11,6 +11,7 @@ import {
 } from "../../domain/apple/machoTargetSelection.js";
 import { AnalysisInputError } from "../../domain/analysisErrorCore.js";
 import { err, ok, type Result } from "../../domain/result.js";
+import { selectPreferredMachoSlice } from "../MachoArchitectureSelection.js";
 
 const cpuName = (cpuType: number, cpuSubtype: number): string => {
   const name = Object.entries(MACHO_CPU_TYPES).find(
@@ -29,6 +30,8 @@ export interface SelectedNativeImage {
   readonly fileOffset: number;
   /** Selected universal slice identity; null when the file is not a universal Mach-O. */
   readonly selection: MachoTargetSelection | null;
+  /** Other slices of the selected CPU family that this inspection does not read. */
+  readonly limitations: readonly string[];
 }
 
 /** Why no image could be selected; `architecture` issues are the caller's to correct. */
@@ -39,8 +42,10 @@ export interface MachoSliceSelectionIssue {
 
 /**
  * Select the thin image to inspect without lipo. A universal Mach-O needs the
- * caller's architecture and yields exactly one validated slice; any other file
- * is returned whole and rejects an architecture rather than ignoring it.
+ * caller's architecture and yields the one validated slice picked by the
+ * subtype preference order (`MACHO_ARCHITECTURE_POLICIES`) that
+ * `inspect_macho` also uses; any other file is returned whole and rejects an
+ * architecture rather than ignoring it.
  */
 export const selectNativeImage = (
   bytes: Buffer,
@@ -51,7 +56,7 @@ export const selectNativeImage = (
   const fat = container.value;
   if (fat === null)
     return architecture === undefined
-      ? ok({ bytes, fileOffset: 0, selection: null })
+      ? ok({ bytes, fileOffset: 0, selection: null, limitations: [] })
       : err({
           kind: "architecture",
           message: `architecture ${architecture} was selected, but the file is not a universal Mach-O; omit architecture.`,
@@ -64,20 +69,24 @@ export const selectNativeImage = (
       kind: "architecture",
       message: `Universal Mach-O holds ${available}; select one architecture.`,
     });
-  const matches = fat.slices.filter(
-    ({ cpuType }) => cpuType === MACHO_CPU_TYPES[architecture],
-  );
-  const [slice] = matches;
-  if (slice === undefined || matches.length > 1)
+  const preferred = selectPreferredMachoSlice(fat.slices, architecture);
+  if (preferred.status !== "selected")
     return err({
       kind: "architecture",
       message:
-        slice === undefined
+        preferred.status === "absent"
           ? `Universal Mach-O holds ${available}, not ${architecture}.`
           : `Universal Mach-O holds several ${architecture} slices (${available}); no slice was selected.`,
     });
+  const { slice } = preferred;
   const selected = readUniversalMachoSlice(bytes, fat, slice);
   if (!selected.ok) return selected;
+  const unread = fat.slices
+    .filter((other) => other !== slice && other.cpuType === slice.cpuType)
+    .map(
+      (other) =>
+        `${cpuName(other.cpuType, other.cpuSubtype)} at file offset ${String(other.offset)}`,
+    );
   return ok({
     bytes: selected.value,
     fileOffset: slice.offset,
@@ -92,6 +101,12 @@ export const selectNativeImage = (
         .update(bytes.subarray(0, fat.tableEnd))
         .digest("hex"),
     },
+    limitations:
+      unread.length === 0
+        ? []
+        : [
+            `Only the selected ${architecture} slice (${cpuName(slice.cpuType, slice.cpuSubtype)} at file offset ${String(slice.offset)}) was read; this universal Mach-O also holds ${unread.join(", ")}, which no architecture value selects.`,
+          ],
   });
 };
 

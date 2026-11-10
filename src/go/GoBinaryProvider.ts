@@ -376,7 +376,10 @@ export class GoBinaryProvider implements GoBinaryPort {
           ...(stringLiterals === undefined
             ? {}
             : { string_literals: stringLiterals }),
-          limitations: limitationsFor(image, stringLiterals, budgets),
+          limitations: [
+            ...limitationsFor(image, stringLiterals, budgets),
+            ...selected.limitations,
+          ],
         };
         if (
           jsonValueByteLength(report, budgets.max_report_bytes) >
