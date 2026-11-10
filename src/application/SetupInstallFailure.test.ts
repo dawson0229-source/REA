@@ -102,3 +102,57 @@ it.each([
 ] as const)("retains %s as a distinct setup failure", (reason, code) => {
   expect(setupInstallFailure(reason).code).toBe(code);
 });
+
+describe("Linux Hopper launcher digest mismatch", () => {
+  const mismatch = {
+    packageFamily: "rpm",
+    releaseVersion: "2.1.0",
+    declaredSha256: "74b5".padEnd(64, "0"),
+    observedSha256: "b41e".padEnd(64, "0"),
+  } as const;
+
+  it("names the feed and package digests instead of reporting a failed download", () => {
+    const result = setupInstallFailure("integrity", {
+      platform: "linux",
+      launcherDigestMismatch: mismatch,
+    });
+    if (result.status !== "failed") throw new Error("expected failure");
+    expect(result.code).toBe("integrity_mismatch");
+    expect(result.launcherDigestMismatch).toEqual(mismatch);
+    expect(result.remediation).toContain("signature verified");
+    expect(result.remediation).toContain(mismatch.releaseVersion);
+    expect(result.remediation).toContain(mismatch.observedSha256);
+    expect(result.remediation).toContain(mismatch.declaredSha256);
+    expect(result.remediation).toContain("stale feed metadata");
+    // A launcher-path override cannot recover this: the mismatch is refused
+    // before the archive is retained, so no cache entry backs the override.
+    expect(result.remediation).not.toContain("HOPPER_LAUNCHER_PATH");
+  });
+
+  it("escapes the feed release version before rendering the remediation", () => {
+    const forged = {
+      ...mismatch,
+      releaseVersion: "2.1.0\r\nrea: hopper is installed\u001b[2K",
+    };
+    const result = setupInstallFailure("integrity", {
+      platform: "linux",
+      launcherDigestMismatch: forged,
+    });
+    if (result.status !== "failed") throw new Error("expected failure");
+    expect(result.launcherDigestMismatch).toEqual(forged);
+    expect(result.remediation).toContain(
+      "release 2.1.0 rea: hopper is installed;",
+    );
+    expect(result.remediation).not.toContain("\r");
+    expect(result.remediation).not.toContain("\u001b");
+  });
+
+  it("keeps the generic recovery for an integrity failure without package facts", () => {
+    expect(setupInstallFailure("integrity", { platform: "linux" })).toEqual({
+      status: "failed",
+      code: "integrity_mismatch",
+      remediation:
+        "The Hopper download failed integrity verification. Retry setup; if it repeats, update REA before installing.",
+    });
+  });
+});
