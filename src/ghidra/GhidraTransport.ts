@@ -95,6 +95,8 @@ export const observeGhidraEndpoint = async (
         return { path: endpoint.path };
       }
       if (process.platform === "win32") {
+        // A limit failure, including one retained with a failed close, is
+        // classified by observationFailure so cleanup stays on the error.
         const encoded = readWindowsPrivateRuntimeFile(
           endpoint.path,
           MAX_TCP_ENDPOINT_BYTES,
