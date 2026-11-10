@@ -24,6 +24,7 @@ for new work, roadmap granularity and producer-owned contracts.
 - [V8 cached-data compilation boundaries](javascript/v8-cached-data/spec.md) ([plan](javascript/v8-cached-data/plan.md), [tasks](javascript/v8-cached-data/tasks.md))
 - [Android `.note.android.ident` ELF note decoding](native/android-elf-ident-note/spec.md) ([plan](native/android-elf-ident-note/plan.md), [tasks](native/android-elf-ident-note/tasks.md))
 - [Native call source coordinates](native/call-source-locations/spec.md) ([plan](native/call-source-locations/plan.md), [tasks](native/call-source-locations/tasks.md), [verification](native/call-source-locations/verification.md))
+- [ELF separate debug-file linkage](native/elf-debug-link/spec.md) ([plan](native/elf-debug-link/plan.md), [tasks](native/elf-debug-link/tasks.md))
 - [Go static string-header literal recovery](native/go-string-literals/spec.md) ([plan](native/go-string-literals/plan.md), [tasks](native/go-string-literals/tasks.md))
 - [Windows Shell Link shortcut inspection](native/windows-shortcut/spec.md) ([plan](native/windows-shortcut/plan.md), [tasks](native/windows-shortcut/tasks.md))
 - [Solidity terminal metadata inspection](solidity/cbor-metadata/spec.md) ([plan](solidity/cbor-metadata/plan.md), [tasks](solidity/cbor-metadata/tasks.md), [verification](solidity/cbor-metadata/verification.md))
