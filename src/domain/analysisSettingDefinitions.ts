@@ -238,7 +238,7 @@ export const ANALYSIS_SETTINGS = {
     defaultValue: DEFAULT_REGEX_MATCHING_DEADLINE_MS,
     maximum: MAXIMUM_REGEX_MATCHING_DEADLINE_MS,
     provider: "regex",
-    relatedProviders: ["ida", "hopper", "kuna"],
+    relatedProviders: ["ida", "hopper", "kuna", "binary-ninja"],
     operations: ["search_strings", "search_procedures"],
   },
   "regex.worker_heap_request_mib": {
@@ -249,7 +249,7 @@ export const ANALYSIS_SETTINGS = {
     unit: "MiB",
     appliesAt: "next_worker",
     provider: "regex",
-    relatedProviders: ["ida", "hopper", "kuna"],
+    relatedProviders: ["ida", "hopper", "kuna", "binary-ninja"],
     operations: ["search_strings", "search_procedures"],
   },
   "capture.decoder_old_generation_mib": {
