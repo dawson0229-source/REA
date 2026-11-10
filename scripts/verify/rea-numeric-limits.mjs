@@ -4,10 +4,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript6";
 
 // Every numeric REA_ limit under src must be an analysis setting or a
-// documented exception with a reason. restart-only is durable. per-call is a
-// launch-captured limit whose runtime migration deletes the registry entry.
-// The three limits moving on #9868, #9865, and #9836 are not in this tree;
-// once their names appear here they must join ANALYSIS_SETTINGS.
+// restart-only exception with a reason and an update_mode. A per-call limit
+// belongs in ANALYSIS_SETTINGS. The three limits moving on #9868, #9865, and
+// #9836 are not in this tree; once their names appear here they must join
+// ANALYSIS_SETTINGS. REA_WEB_BUNDLE_ENDPOINT_LITERAL_CANDIDATES is numeric
+// even though its name has no byte or time suffix.
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const definitionsPath = join(root, "src/domain/analysisSettingDefinitions.ts");
@@ -224,23 +225,31 @@ const namesIn = (source, pattern) =>
 const direct =
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
 if (direct) {
   const failures = [];
   const definitions = await readFile(definitionsPath, "utf8");
   const registry = await readFile(registryPath, "utf8");
   const runtime = namesIn(definitions, /environment:\s*"(REA_[A-Z0-9_]+)"/gu);
+  const declaredNames = [
+    ...registry.matchAll(/name:\s*"(REA_[A-Z0-9_]+)"/gu),
+  ].map((match) => match[1]);
   const entries = [
     ...registry.matchAll(
-      /name:\s*"(REA_[A-Z0-9_]+)"\s*,\s*policy:\s*"(restart-only|per-call)"\s*,\s*read:\s*"(startup|per-call)"\s*,\s*reason:\s*"((?:\\.|[^"\\])*)"/gu,
+      /name:\s*"(REA_[A-Z0-9_]+)"\s*,\s*update_mode:\s*"(runtime|restart)"\s*,\s*policy:\s*"(restart-only|per-call)"\s*,\s*read:\s*"(startup|per-call)"\s*,\s*reason:\s*"((?:\\.|[^"\\])*)"/gu,
     ),
   ];
   const listed = new Map();
   for (const match of entries) {
-    const [, name, policy, read, reason] = match;
+    const [, name, updateMode, policy, read, reason] = match;
     if (listed.has(name)) failures.push(`${name} is listed twice`);
-    listed.set(name, { policy, read, reason });
+    listed.set(name, { updateMode, policy, read, reason });
     if (reason.trim().length < 40)
       failures.push(`${name} needs a reason that states why`);
+    if (updateMode !== "restart")
+      failures.push(
+        `${name} is outside ANALYSIS_SETTINGS, so its update_mode must be restart`,
+      );
     if (runtime.has(name))
       failures.push(
         `${name} is both a runtime setting and on the exception list`,
@@ -249,6 +258,19 @@ if (direct) {
       failures.push(`${name} is per-call policy but is not read per call`);
     if (policy === "restart-only" && read !== "startup")
       failures.push(`${name} is restart-only but is not read at startup`);
+  }
+  for (const name of declaredNames) {
+    if (!listed.has(name))
+      failures.push(`${name} is registered without update_mode`);
+  }
+  const settingBodies = [
+    ...definitions.matchAll(/\n {2}"[^"]+": \{([\s\S]*?)\n {2}\},/gu),
+  ];
+  if (settingBodies.length === 0)
+    failures.push("ANALYSIS_SETTINGS did not parse into setting bodies");
+  for (const [, body] of settingBodies) {
+    if (!/updateMode:\s*"(?:runtime|restart)"/u.test(body))
+      failures.push("an analysis setting is missing updateMode");
   }
 
   const discovered = discoverNumericLimitUses(
@@ -280,6 +302,64 @@ if (direct) {
       inRegistry: listed.has(name),
     });
     if (failure !== undefined) failures.push(failure);
+  }
+
+  const parameterOwners = [
+    "src/artifacts/ArtifactReaderLimits.ts",
+    "src/domain/artifactReaderLimits.ts",
+    "src/domain/webNetworkCapture.ts",
+  ];
+  for (const relativePath of parameterOwners) {
+    const source = await readFile(join(root, relativePath), "utf8");
+    if (/update_mode:\s*"runtime"/u.test(source))
+      failures.push(
+        `${relativePath} is a per-call parameter, so update_mode cannot be runtime`,
+      );
+    if (!/update_mode:\s*"parameter"/u.test(source))
+      failures.push(`${relativePath} must report update_mode parameter`);
+  }
+
+  const forbidden =
+    /(?<![A-Za-z0-9_])(?:rea_restart_required|restartRequired|restart_required)(?![A-Za-z0-9_])|effect:\s*"(?:immediate|next_process)"|SettingChangeEffect/gu;
+  // Docs and verification receipts keep the field names they recorded.
+  // Source, tests, skills, and scripts cannot reintroduce those names.
+  const scanRoots = ["src", "tests", ".agents", "scripts"].map((dir) =>
+    join(root, dir),
+  );
+  const skipDir = new Set([
+    "node_modules",
+    "dist",
+    ".turbo",
+    ".cache",
+    "rea-numeric-limits.mjs",
+  ]);
+  const listText = async (dir) => {
+    const output = [];
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return output;
+    }
+    for (const entry of entries) {
+      if (skipDir.has(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) output.push(...(await listText(path)));
+      else if (/\.(?:ts|tsx|mjs|js|md|json|py|yml|yaml)$/u.test(entry.name))
+        output.push(path);
+    }
+    return output;
+  };
+  for (const dir of scanRoots) {
+    for (const path of await listText(dir)) {
+      if (path.endsWith(`${sep}rea-numeric-limits.mjs`)) continue;
+      const source = await readFile(path, "utf8");
+      const hit = source.match(forbidden);
+      if (hit)
+        failures.push(
+          `${relative(root, path).split(sep).join("/")} still uses ${[...new Set(hit)].join(", ")}`,
+        );
+    }
   }
 
   if (failures.length > 0) {
