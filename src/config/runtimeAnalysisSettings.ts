@@ -29,6 +29,8 @@ export const runtimeAnalysisConfig = (
   if (read === undefined) return config;
   const deadline = config.regexMatchingDeadline;
   const heap = config.regexWorkerHeapRequest;
+  const scan = config.hopperCallerScanBudget;
+  const bridge = config.bridgeMaxRequestBytes;
   return {
     ...config,
     get ghidraStartupTimeoutMs() {
@@ -42,6 +44,11 @@ export const runtimeAnalysisConfig = (
         read().overrides["hopper.startup_timeout_ms"] ??
         config.hopperStartupTimeoutMs
       );
+    },
+    get hopperStartupTimeoutSource() {
+      return read().overrides["hopper.startup_timeout_ms"] === undefined
+        ? config.hopperStartupTimeoutSource
+        : "runtime";
     },
     get ghidraDecompileTimeoutSeconds() {
       const value = read().overrides["ghidra.decompile_timeout_seconds"];
@@ -101,6 +108,31 @@ export const runtimeAnalysisConfig = (
       get source() {
         return read().overrides["regex.worker_heap_request_mib"] === undefined
           ? heap.source
+          : "runtime";
+      },
+    },
+    hopperCallerScanBudget: {
+      ...scan,
+      get milliseconds() {
+        return (
+          read().overrides["hopper.caller_scan_budget_ms"] ?? scan.milliseconds
+        );
+      },
+      get source() {
+        return read().overrides["hopper.caller_scan_budget_ms"] === undefined
+          ? scan.source
+          : "runtime";
+      },
+    },
+    bridgeMaxRequestBytes: {
+      get maximumBytes() {
+        return (
+          read().overrides["bridge.max_request_bytes"] ?? bridge.maximumBytes
+        );
+      },
+      get source() {
+        return read().overrides["bridge.max_request_bytes"] === undefined
+          ? bridge.source
           : "runtime";
       },
     },

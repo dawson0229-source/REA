@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
 import { AnalysisSettings } from "./AnalysisSettings.js";
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
+import {
+  applyWindowsChangeTimeSnapshot,
+  resolveWindowsChangeTimeSettle,
+} from "../config/windowsChangeTimeSettle.js";
+import { pwntoolsInputBytes } from "../native/pwntools/PwntoolsInputLimit.js";
 import {
   runtimeAnalysisConfig,
   runtimeAsarHeaderAdmission,
@@ -134,7 +140,13 @@ it("exposes shared provider controls and preserves the explicit unbounded decomp
     store
       .inspect({ provider: "ghidra", operation: "search_strings" })
       .settings.map(({ setting }) => setting),
-  ).toEqual(["ghidra.startup_timeout_ms"]);
+  ).toEqual(["ghidra.startup_timeout_ms", "bridge.max_request_bytes"]);
+  for (const operation of ["list_cutter_sessions", "cutter_command"] as const)
+    expect(
+      store
+        .inspect({ provider: "cutter", operation })
+        .settings.map(({ setting }) => setting),
+    ).toContain("bridge.max_request_bytes");
   expect(
     store
       .inspect({ provider: "ida", operation: "search_strings" })
@@ -144,7 +156,23 @@ it("exposes shared provider controls and preserves the explicit unbounded decomp
     store
       .inspect({ operation: "inventory_artifact" })
       .settings.map(({ setting }) => setting),
-  ).toEqual(["asar.max_listing_bytes", "asar.max_header_bytes"]);
+  ).toEqual([
+    "asar.max_listing_bytes",
+    "asar.max_header_bytes",
+    "windows.change_time_drift_ms",
+    "windows.change_time_settle_poll_ms",
+    "windows.change_time_settle_max_polls",
+  ]);
+  for (const operation of [
+    "procedure_pseudo_code",
+    "procedure_assembly",
+    "analyze_function",
+  ] as const)
+    expect(
+      store
+        .inspect({ provider: "kuna", operation })
+        .settings.map(({ setting }) => setting),
+    ).toContain("kuna.project_timeout_ms");
   expect(
     store.update({
       changes: [
@@ -191,4 +219,93 @@ it("exposes shared provider controls and preserves the explicit unbounded decomp
     }).ok,
   ).toBe(true);
   expect(config.ghidraDecompileTimeoutSeconds).toBe(7);
+});
+
+it("rejects an out-of-range per-call limit and reads an accepted value from the operation snapshot", () => {
+  const store = new AnalysisSettings({});
+  const rejected = store.update({
+    changes: [
+      { setting: "windows.change_time_drift_ms", action: "set", value: 0 },
+    ],
+  });
+  expect(rejected.ok).toBe(false);
+  if (!rejected.ok)
+    expect(projectAnalysisError(rejected.error)).toMatchObject({
+      code: "invalid_request",
+    });
+  expect(
+    store.update({
+      changes: [
+        { setting: "bridge.max_request_bytes", action: "set", value: 1 },
+      ],
+    }).ok,
+  ).toBe(false);
+  expect(
+    store.update({
+      changes: [
+        {
+          setting: "windows.change_time_settle_max_polls",
+          action: "set",
+          value: 1001,
+        },
+      ],
+    }).ok,
+  ).toBe(false);
+  const accepted = store.update({
+    changes: [
+      { setting: "windows.change_time_drift_ms", action: "set", value: 5000 },
+      { setting: "pwntools.max_input_bytes", action: "set", value: 65536 },
+      { setting: "bridge.max_request_bytes", action: "set", value: 33554432 },
+    ],
+  });
+  expect(accepted.ok).toBe(true);
+  if (!accepted.ok) return;
+  expect(accepted.value).toMatchObject({
+    pending_restart: false,
+  });
+  const parsed = parseConfig({});
+  if (!parsed.ok) throw parsed.error;
+  const live = runtimeAnalysisConfig(parsed.value, store.read);
+  store.run(() => {
+    const windows = resolveWindowsChangeTimeSettle({});
+    if (!windows.ok) throw windows.error;
+    expect(applyWindowsChangeTimeSnapshot(windows.value)).toMatchObject({
+      driftMs: 5000,
+      driftSource: "runtime",
+      pollSource: "default",
+    });
+    expect(pwntoolsInputBytes({})).toMatchObject({
+      configured: true,
+      bytes: 65536,
+      source: "runtime",
+    });
+    expect(live.bridgeMaxRequestBytes).toMatchObject({
+      maximumBytes: 33554432,
+      source: "runtime",
+    });
+    expect(live.hopperStartupTimeoutSource).toBe("default");
+  });
+  expect(pwntoolsInputBytes({})).toMatchObject({
+    bytes: 32 * 1024 * 1024,
+    source: "default",
+  });
+});
+
+it("keeps the Hopper startup deadline source through a runtime override", () => {
+  const parsed = parseConfig({ REA_HOPPER_STARTUP_TIMEOUT_MS: "45000" });
+  if (!parsed.ok) throw parsed.error;
+  const store = new AnalysisSettings({});
+  const live = runtimeAnalysisConfig(parsed.value, store.read);
+  expect(live.hopperStartupTimeoutSource).toBe("setting");
+  expect(
+    store.update({
+      changes: [
+        { setting: "hopper.startup_timeout_ms", action: "set", value: 8000 },
+      ],
+    }).ok,
+  ).toBe(true);
+  store.run(() => {
+    expect(live.hopperStartupTimeoutMs).toBe(8000);
+    expect(live.hopperStartupTimeoutSource).toBe("runtime");
+  });
 });

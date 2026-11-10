@@ -39,6 +39,7 @@ import { combineFunctionRelationshipCoverage } from "../domain/functionCallCover
 import { functionDossierSchema } from "../domain/native/functionDossier.js";
 import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
 import type { JsonValue } from "../domain/jsonValue.js";
+import { analysisSettingLimit } from "../domain/analysisSettingDefinitions.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { RelationshipCoverage } from "../domain/relationshipCoverage.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
@@ -52,7 +53,12 @@ import {
   kunaRetainedResourceCleanupError,
   type KunaProcessLauncher,
 } from "./KunaCommand.js";
-import { kunaFunctionDeadline } from "./KunaConfiguration.js";
+import {
+  kunaFunctionDeadline,
+  kunaProjectDeadline,
+  type KunaConfiguration,
+  type KunaDeadline,
+} from "./KunaConfiguration.js";
 import {
   createKunaResourceScope,
   inspectKunaInstallation,
@@ -278,13 +284,15 @@ const exportUnavailableMessage = (
 /**
  * How a request that needs the export reports the export's failure. A session
  * never rebuilds a failed export, so repeating the request cannot succeed; the
- * error says what to change before reopening the target. Kuna settings are read
- * when REA starts, so changing one also needs a restart. Cancellation and
+ * error says what to change before reopening the target. A failed export is
+ * not rebuilt in the same session. The project deadline can change at runtime
+ * for the next export. Cancellation and
  * unproven cleanup keep their own errors, which callers must still observe.
  */
 const exportUnavailable = (
   operation: string,
   failure: AnalysisError,
+  deadline?: KunaDeadline,
 ): AnalysisError => {
   if (failure instanceof AnalysisCancelledError || failure.cleanupIncomplete)
     return failure;
@@ -292,9 +300,23 @@ const exportUnavailable = (
   const exported = projectAnalysisError(failure);
   const restart =
     "REA reads Kuna settings when it starts, so restart REA, then reopen the target.";
+  if (
+    failure instanceof AnalysisTimeoutError &&
+    failure.limit === undefined &&
+    deadline !== undefined &&
+    deadline.setting === "REA_KUNA_PROJECT_TIMEOUT_MS" &&
+    deadline.ms === failure.timeoutMs
+  )
+    failure.bindLimit(
+      analysisSettingLimit(
+        "kuna.project_timeout_ms",
+        deadline.ms,
+        deadline.source,
+      ),
+    );
   const next =
     failure instanceof AnalysisTimeoutError
-      ? `To retry, set REA_KUNA_PROJECT_TIMEOUT_MS above ${String(failure.timeoutMs)} ms in the environment that starts REA. ${restart}`
+      ? `To retry, set kuna.project_timeout_ms above ${String(failure.timeoutMs)} ms with update_analysis_settings. It can be changed at runtime. The launch seed is REA_KUNA_PROJECT_TIMEOUT_MS. Then reopen the target so the export runs again.`
       : failure instanceof AnalysisResourceConstraintError &&
           failure.remediationAction !== undefined
         ? // A fixed buffer (`memory`) is no setting, so a restart cannot help.
@@ -394,6 +416,8 @@ export class KunaSessionClient implements AnalysisClient {
   #installation:
     | SharedStartupAttempt<Result<KunaInstallation, AnalysisError>>
     | undefined;
+  /** Launch configuration captured when the export starts, for its deadline source. */
+  #kunaConfiguration: KunaConfiguration | undefined;
   #inventory:
     | Promise<Result<readonly KunaInventoryFunction[], AnalysisError>>
     | undefined;
@@ -2036,7 +2060,14 @@ export class KunaSessionClient implements AnalysisClient {
     return this.#starting;
   }
 
+  #projectDeadline(): KunaDeadline | undefined {
+    return this.#kunaConfiguration === undefined
+      ? undefined
+      : kunaProjectDeadline(this.#kunaConfiguration);
+  }
+
   async #lookupOrBuild(installation: KunaInstallation): Promise<void> {
+    this.#kunaConfiguration = installation.configuration;
     const key = kunaProjectKey({
       targetSha256: this.#target.sha256,
       targetBasename: basename(this.#target.path),
@@ -2274,7 +2305,11 @@ export class KunaSessionClient implements AnalysisClient {
       settled.error instanceof KunaPublishedProjectCleanupError
     )
       return undefined;
-    const unavailable = exportUnavailable(operation, settled.error);
+    const unavailable = exportUnavailable(
+      operation,
+      settled.error,
+      this.#projectDeadline(),
+    );
     return unavailable instanceof AnalysisCapabilityUnavailableError
       ? unavailable
       : undefined;
@@ -2308,7 +2343,10 @@ export class KunaSessionClient implements AnalysisClient {
     }, WAIT_PROGRESS_INTERVAL_MS);
     try {
       const built = await waitFor(project, options.signal, operation);
-      if (!built.ok) return err(exportUnavailable(operation, built.error));
+      if (!built.ok)
+        return err(
+          exportUnavailable(operation, built.error, this.#projectDeadline()),
+        );
       return ok(this.#readerFor(built.value));
     } finally {
       clearInterval(timer);
