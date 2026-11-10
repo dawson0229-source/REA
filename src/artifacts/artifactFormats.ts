@@ -40,6 +40,7 @@ import { NodeSeaArtifactReader } from "./NodeSeaArtifactReader.js";
 import type { PyInstallerAdmission } from "./pyinstaller/PyInstallerAdmission.js";
 import { PyInstallerArtifactReader } from "./PyInstallerArtifactReader.js";
 import { Uf2ArtifactReader } from "./Uf2ArtifactReader.js";
+import { NtfsMftArtifactReader } from "./NtfsMftArtifactReader.js";
 import { UImageArtifactReader } from "./UImageArtifactReader.js";
 import { UnityFsArtifactReader } from "./UnityFsArtifactReader.js";
 import { WxapkgArtifactReader } from "./WxapkgArtifactReader.js";
@@ -60,6 +61,10 @@ export interface ArtifactReaderConstruction {
   readonly espFlashSelection?: EspFlashSelection | undefined;
   /** Caller-selected root spelling; only ASAR companion lookup consumes this. */
   readonly selectedPath?: string | undefined;
+  /** Accepted operation snapshot. Readers resolve runtime ceilings from it per call. */
+  readonly analysisSettings?:
+    | import("../domain/analysisSettings.js").AnalysisSettingsReader
+    | undefined;
 }
 
 export interface FormatDescriptor {
@@ -464,6 +469,19 @@ const NON_ZIP_FORMATS = {
       "FIT inventory reports each /images node's stored bytes and its declared type, architecture, OS, compression, load and entry. Image data is not decompressed or decrypted, signatures are not verified, nothing is executed, and load and entry addresses are declarations.",
     createReader: (path, options) =>
       new FitArtifactReader(path, sourceOf(options)),
+  }),
+  "ntfs-mft": described("ntfs-mft", {
+    ...plain,
+    retainClassifiedSource: true,
+    readerLimitation:
+      "MFT inventory reports each FILE record's header, flags, record extent and update-sequence fixup result. The whole file is bounded by ntfs.mft_max_file_bytes (launch seed REA_NTFS_MFT_MAX_FILE_BYTES, default 512 MiB). update_analysis_settings changes it for the next operation. Attributes, filenames, data streams and the $UsnJrnl:$J journal are not decoded, so no path, file size or change history is established.",
+    createReader: (path, options) =>
+      new NtfsMftArtifactReader(
+        path,
+        sourceOf(options),
+        options.environment,
+        options.analysisSettings,
+      ),
   }),
   unknown: described("unknown", plain),
 } satisfies Record<
