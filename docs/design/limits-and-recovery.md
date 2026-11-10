@@ -5,7 +5,9 @@ who owns each value, when an update takes effect, how providers enforce it, and
 how to extend the system. The public tool contract is in
 [MCP contracts](../reference/mcp-contracts.md#editable-analysis-settings); recorded runtime
 checks and their limitations are in the
-[verification report](../verification/runtime-analysis-settings.md).
+[verification report](../verification/runtime-analysis-settings.md). The
+[limit inventory](rea-limit-inventory.md) lists every numeric `REA_` limit, which
+of them are runtime settings, and which stay restart-only.
 
 ## Problem and design boundary
 
@@ -125,6 +127,19 @@ raise REA's reserved string limit or Node's string ceiling. Like the regex
 deadline, it is in `SELECTED_REGISTRATION_SETTINGS`, so setup forwards an
 explicit selection into the client registration.
 
+Acquired Windows registry hive inventory reads one caller-selected file
+into a single buffer. `regf.hive_max_file_bytes` is that ceiling, seeded by
+`REA_REGF_HIVE_MAX_FILE_BYTES`: a positive decimal integer from 4096 bytes
+(one base block) to 8589934592 bytes (8 GiB). Unset uses 536870912 bytes
+(512 MiB). An invalid launch value is a configuration error and does not
+fall back to the default. A file above the effective ceiling is a limit
+failure: it names `regf.hive_max_file_bytes`, the effective byte count,
+whether that count came from the default, the launch setting, or a runtime
+override, and the allowed range. `update_analysis_settings` changes it for
+the next operation. Raising it only admits a larger acquired hive. It does
+not decode key nodes, values, or transaction logs, and it does not mount the
+host registry.
+
 Windows ChangeTime admission waits out a fresh timestamp before recording a
 baseline. `REA_WINDOWS_CHANGE_TIME_DRIFT_MS` (default 2000 ms, floor 1 ms,
 maximum 60000 ms), `REA_WINDOWS_CHANGE_TIME_SETTLE_POLL_MS` (default 25 ms,
@@ -186,6 +201,7 @@ cannot partially apply. Clients coordinating writes can supply
 | `javascript.analysis_timeout_ms`, `javascript.max_heap_mb`                                                      | Next source analysis / new JavaScript worker                                    |
 | `wasm.command_timeout_ms`                                                                                       | Next WABT operation                                                             |
 | `native.matching_representation_bytes`                                                                          | Next `match_native_functions` request                                           |
+| `regf.hive_max_file_bytes`                                                                                      | Next registry-hive inventory or extraction                                      |
 
 ### Precedence and lifetime
 
@@ -273,7 +289,10 @@ that argument; raising a runtime default cannot override it.
 
 The resource owner constructs `details.limit` from the registry plus the budget
 it actually enforced. Metadata includes `agent_editable: true`,
-`scope: "rea-runtime"`, and `rea_restart_required: false`. Optional
+`scope: "rea-runtime"`, `update_mode`, and `pending_restart`. `update_mode:
+"runtime"` means `update_analysis_settings` can change the active value.
+`pending_restart` is false when that reported value is the one this process is
+using. Optional
 `required_value`, `source`, and `parameter` fields are supplied only where known
 or applicable. Do not infer a source because a value happens to equal a default.
 Error copying, attribution, redaction, and delivery must preserve these facts.
@@ -288,8 +307,9 @@ so its adapter projects with an explicit `"invocation"` caller lifetime.
 `scope: "rea-invocation"`, `applies_at: "next_invocation"` and the launch
 `environment` seed when one exists. `agent_editable: true` still holds, because
 the caller chooses that environment value or per-call `parameter` for the new
-invocation; `rea_restart_required: false` means no running REA process needs a
-restart. A producer keeps guidance that holds only while its caller retains the
+invocation; `update_mode: "runtime"` and `pending_restart: false` mean the
+reported value is active in this process. `update_mode: "restart"` means
+`update_analysis_settings` does not change it. A producer keeps guidance that holds only while its caller retains the
 session, such as "the Ghidra session remains usable" or a same-session runtime
 update, in `continuingCallerGuidance`; the shared presentation adds it only for
 a continuing caller. The producer's own message and remediation must stay true
